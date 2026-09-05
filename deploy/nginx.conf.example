@@ -1,0 +1,111 @@
+# DeeChat relay — nginx reverse proxy.
+#
+#   cp nginx.conf.example /etc/nginx/sites-available/dee-relay
+#   ln -s /etc/nginx/sites-available/dee-relay /etc/nginx/sites-enabled/
+#   nginx -t && systemctl reload nginx
+#
+# Caddyfile.example is the recommended front end; this exists for hosts that
+# already run nginx. Two nginx defaults have to be turned off explicitly here,
+# and both of them write user data to disk:
+#
+#   proxy_request_buffering  — buffers request bodies to a temp file once they
+#                              exceed client_body_buffer_size. On this relay
+#                              that means queued ciphertext and attachment
+#                              chunks landing in /var/lib/nginx/body.
+#   access_log               — one line per request, each carrying a queue id in
+#                              the URL and the client's IP address.
+#
+# The node holds no durable state and internal/audit fails the build if that
+# changes. Neither directive is inside that test's reach, so getting them wrong
+# reintroduces on the host exactly what the binary refuses to keep.
+#
+# Verify with deploy/probe-public.sh once this is live.
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name relay-1.example.org;
+
+    ssl_certificate     /etc/letsencrypt/live/relay-1.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/relay-1.example.org/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    server_tokens off;
+
+    # --- Logging -------------------------------------------------------------
+    # See the header. `error_log ... crit` keeps genuine failures (upstream down,
+    # TLS errors) without logging per-request URLs. Note that nginx runs under
+    # its own unit, so its journal is the persistent system one — the node's
+    # LogNamespace=deechat volatile journal does not cover it.
+    access_log off;
+    error_log /var/log/nginx/dee-relay-error.log crit;
+
+    # --- Body handling -------------------------------------------------------
+    # Stream to the upstream; never spool to disk.
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_max_temp_file_size 0;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    # X-Forwarded-For / X-Real-IP are deliberately NOT set. The node never logs
+    # client addresses and has no use for them; not forwarding them keeps that
+    # true even if something later grows a reader for them.
+
+    # --- Layer 1: the mesh routes are not internet-reachable ------------------
+    # Pool-internal replication. 404 rather than 403 deliberately: a 403
+    # confirms the route exists.
+    #
+    # This is belt-and-braces: the node does not mount /mesh/* on its public
+    # listener in any configuration, and replication listens on a private
+    # address (DEE_NODE_MESH_ADDR) this proxy never sees. Keep the rule — it is
+    # the layer that survives a refactor that puts a mesh route back.
+    location /mesh/ {
+        return 404;
+    }
+
+    # --- Attachment relay ----------------------------------------------------
+    # Keep in step with DEE_NODE_MAX_CHUNK_BYTES in node.env, and never below
+    # 1 MiB — the client sends 512 KiB plaintext chunks that base64 to roughly
+    # 700 KiB, so a tighter limit rejects every transfer.
+    #
+    # GET /attachments/chunks long-polls for up to DEE_NODE_RELAY_POLL_TIMEOUT
+    # (25s default), so proxy_read_timeout must clear it or the proxy cuts the
+    # poll and the recipient sees a transfer that never progresses.
+    location /attachments/ {
+        client_max_body_size 1536k;
+        proxy_read_timeout 90s;
+        proxy_send_timeout 90s;
+        proxy_pass http://127.0.0.1:8080;
+    }
+
+    # --- Everything else -----------------------------------------------------
+    # Messages, acks, presence, prekeys, health. DEE_NODE_MAX_PAYLOAD_BYTES is
+    # 8 KiB; this ceiling covers batched requests (POST /prekeys publishes up to
+    # 100 entries) with room to spare. The binary applies a tighter bound of its
+    # own, derived from the caps it enforces (internal/httpapi/body_limit.go), so
+    # this is the outer and coarser of two layers.
+    location / {
+        client_max_body_size 512k;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+
+# Plain HTTP exists only to redirect. The client refuses http:// for non-local
+# hosts, so this is for humans and for the ACME challenge.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name relay-1.example.org;
+    access_log off;
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}

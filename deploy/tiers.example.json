@@ -1,0 +1,56 @@
+{
+  "_comment": [
+    "Tier presets for cmd/dee-admit. This file is the price list, and it is a",
+    "file rather than a table in a binary on purpose: the relay never branches",
+    "on a tier label, so nothing published here inherits a commercial",
+    "vocabulary, and re-pricing is an edit rather than a release. A self-hoster",
+    "needs none of this — a relay with no credential file admits everyone at",
+    "the caps in its env file, which is the free path.",
+    "",
+    "Every number here is a capacity term and never a permission. Zero, or",
+    "absent, means 'use the box's own cap', and a credential may only ever",
+    "lower one — so Dedicated and Sovereign carry a label and a date and",
+    "nothing else: the box is theirs and its env file is the only ceiling that",
+    "means anything.",
+    "",
+    "queueSlots is derived, never chosen: members × (members − 1) × the",
+    "per-pair quota of 10, at the member count that tier is sized for (6, 12,",
+    "25). Set exactly there it never rejects anything the per-pair quota would",
+    "have allowed a circle of that size.",
+    "",
+    "A trial is the chosen tier's terms with a 14-day window, so there is no",
+    "trial preset here: dee-admit mint --tier crew --days 14."
+  ],
+  "tiers": [
+    {
+      "tier": "personal",
+      "queueSlots": 300,
+      "retentionWindow": "24h",
+      "attachmentBytes": 104857600,
+      "concurrentTransfers": 2,
+      "transitBytesPerDay": 53687091200
+    },
+    {
+      "tier": "crew",
+      "queueSlots": 1320,
+      "retentionWindow": "48h",
+      "attachmentBytes": 104857600,
+      "concurrentTransfers": 4,
+      "transitBytesPerDay": 53687091200
+    },
+    {
+      "tier": "team",
+      "queueSlots": 6000,
+      "retentionWindow": "72h",
+      "attachmentBytes": 104857600,
+      "concurrentTransfers": 8,
+      "transitBytesPerDay": 53687091200
+    },
+    {
+      "tier": "dedicated"
+    },
+    {
+      "tier": "sovereign"
+    }
+  ]
+}

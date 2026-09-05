@@ -1,0 +1,37 @@
+[Unit]
+Description=DeeChat relay health check
+Documentation=file:///usr/share/doc/dee-relay/README.md
+After=dee-relay.service
+
+[Service]
+Type=oneshot
+# Polls loopback: the check is about this relay, and going out through the
+# public hostname would only add a dependency on DNS and the proxy.
+# probe-public.sh is the one that must use the public name.
+ExecStart=/usr/local/bin/dee-node-monitor.sh http://127.0.0.1:8080 --env-file /etc/deechat/node.env
+
+# Exit 1 is a warning, 2 is critical. Point this at whatever alerts you —
+# a curl to a webhook, systemd-cat, mail. Left commented because a monitor that
+# silently notifies nobody is worse than no monitor: it produces a green
+# dashboard.
+#OnFailure=dee-node-alert.service
+
+User=deechat
+Group=deechat
+
+# The check reads /health and writes one integer per node to /run. Nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RuntimeDirectory=dee-node-monitor
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+
+# Same volatile namespace as the relay: a health poll records aggregate counts,
+# but writing them to the persistent journal every minute still builds a
+# durable, timestamped record of when this relay was busy.
+LogNamespace=deechat

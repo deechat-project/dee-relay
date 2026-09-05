@@ -1,0 +1,95 @@
+# DeeChat relay node — container unit (podman; docker works with the same
+# flags if you swap the binary path and drop --sdnotify).
+#
+# The bare-binary unit (dee-relay.service) is simpler and has fewer moving
+# parts; this one exists for hosts that standardise on containers. Use one or
+# the other, not both.
+#
+# Install:
+#   podman pull IMAGE_REF                      # digest-pinned, see below
+#   install -d -m 0750 /etc/deechat
+#   install -m 0640 node.env /etc/deechat/node.env
+#   install -m 0644 journald@deechat.conf /etc/systemd/journald@deechat.conf
+#   install -m 0644 dee-relay-container.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now dee-relay-container
+
+[Unit]
+Description=DeeChat relay node (container)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+Restart=always
+RestartSec=2s
+TimeoutStopSec=20
+
+# Pin by digest, never by tag: a tag can be repointed, and the whole argument
+# for publishing an artifact fingerprint is that the thing running is the
+# thing whose digest was published.
+Environment=IMAGE_REF=ghcr.io/REPLACE_ME/dee-relay@sha256:REPLACE_ME
+
+ExecStart=/usr/bin/podman run \
+    --rm \
+    --replace \
+    --name dee-relay \
+    --env-file /etc/deechat/node.env \
+    --publish 127.0.0.1:8080:8080 \
+    --read-only \
+    --read-only-tmpfs=false \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --user 65532:65532 \
+    --memory=REPLACE_ME \
+    --memory-swap=REPLACE_ME \
+    --pids-limit=256 \
+    --log-driver=journald \
+    ${IMAGE_REF}
+ExecStop=/usr/bin/podman stop --time 10 dee-relay
+
+# --publish binds 127.0.0.1 only: the reverse proxy terminates TLS and forwards
+# over loopback. Nothing here is reachable from the internet directly, which is
+# also where Layer 1 lives — the proxy returns 404 for /mesh/*, and the node does
+# not serve /mesh/* on this port at all.
+#
+# THE MESH LISTENER IN A CONTAINER (pool members only; skip it on a single relay).
+# Replication listens on its own private address, and the node refuses to boot on
+# a wildcard or public bind — a check it makes on the address it can see, which
+# inside a namespace is not the address the host publishes. Two recipes it accepts:
+#
+#   1. Host networking (simplest, and the env file matches the bare-binary unit):
+#      add --network=host, drop --publish, and set
+#        DEE_NODE_ADDR=127.0.0.1:8080
+#        DEE_NODE_MESH_ADDR=10.0.0.1:8081     # this host's peering address
+#      The cost is that the container shares the host's network namespace.
+#
+#   2. A static container address on a private podman network:
+#        podman network create --subnet 10.89.0.0/24 deechat
+#      then add --network=deechat --ip=10.89.0.10, publish the mesh port with
+#      --publish 10.0.0.1:8081:8081, and set
+#        DEE_NODE_MESH_ADDR=10.89.0.10:8081
+#      Fixed --ip matters: the default address changes between runs, and the node
+#      will not start on an address it cannot verify is private.
+#
+# Either way, firewall the mesh port to the other relays' peering addresses. It
+# serves every identity's queued records to any caller holding the pool secret,
+# and the secret is shared, so any member can impersonate any other.
+#
+# --read-only-tmpfs=false leaves the container with no writable path at all.
+# The image is distroless static and the binary writes nothing, so it needs
+# none; if a future change makes the node need scratch space, that is a design
+# question before it is a flag.
+#
+# No volumes, by design. A relay that mounts one has already lost the argument
+# the project is built on, and the in-binary audit only guards the binary's half
+# of that.
+#
+# --memory and --memory-swap must be the SAME value: equal values mean "no
+# swap", and swap would write queued ciphertext to disk. Take both from
+# deploy/memory-ceiling.sh, and set GOMEMLIMIT in node.env to the value it
+# prints alongside them.
+
+LogNamespace=deechat
+
+[Install]
+WantedBy=multi-user.target

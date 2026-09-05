@@ -1,0 +1,101 @@
+# DeeChat relay node — bare-binary unit.
+#
+# Install:
+#   install -m 0755 dee-relay /usr/local/bin/dee-relay
+#   install -d -m 0750 /etc/deechat
+#   install -m 0640 node.env /etc/deechat/node.env     # from node.env.example
+#   install -m 0644 journald@deechat.conf /etc/systemd/journald@deechat.conf
+#   install -m 0644 dee-relay.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now dee-relay
+#
+# Then: deploy/acceptance.sh http://127.0.0.1:8080 --unit dee-relay.service
+#
+# The container variant is dee-relay-container.service. Both are supported;
+# the sandbox directives below are what actually matter.
+
+[Unit]
+Description=DeeChat relay node
+Documentation=file:///usr/share/doc/dee-relay/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/dee-relay
+EnvironmentFile=/etc/deechat/node.env
+User=deechat
+Group=deechat
+
+# "Survives host reboots unattended" is this line plus WantedBy below, and
+# nothing else. What makes it true rather than merely configured is the
+# acceptance test — reboot the host, then assert /health.
+Restart=always
+RestartSec=2s
+
+# --- Memory -----------------------------------------------------------------
+# MemoryMax MUST come from deploy/memory-ceiling.sh against this host's
+# node.env, not from a guess. Every store is RAM-only, so an OOM kill loses
+# every queued message on this relay.
+#
+#   deploy/memory-ceiling.sh /etc/deechat/node.env
+#
+# That script prints MemoryMax and a matching GOMEMLIMIT. Set them together:
+# GOMEMLIMIT (in node.env) makes the Go collector work harder as it approaches
+# the ceiling, which turns an OOM kill into GC pressure. Without it a heap at
+# 100% of live set can still double before a collection and be killed under a
+# MemoryMax that "fits".
+MemoryMax=REPLACE_ME
+
+# Swap would write queued ciphertext and routing ids to disk — durable state by
+# the back door, on a relay whose whole claim is that it holds none. Refuse it
+# and take the OOM instead.
+MemorySwapMax=0
+
+# --- Filesystem -------------------------------------------------------------
+# The binary refuses to write state (internal/audit/no_durable_state_test.go);
+# the host refuses to let it. ProtectSystem=strict already mounts everything
+# read-only bar /dev, /proc, /sys; the rest closes the remaining writable paths.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=
+NoNewPrivileges=true
+
+# --- Privileges -------------------------------------------------------------
+# The listener is above 1024, so the process needs no capabilities at all.
+# Never point DEE_NODE_ADDR at :443 to avoid granting one — the reverse proxy
+# terminates TLS.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+PrivateDevices=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectHostname=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+
+# --- Logging ----------------------------------------------------------------
+# The audit guards the binary, not the host: journald persists captured stdout
+# to /var/log/journal, which would put boot and mesh lines on disk. The
+# namespace's Storage=volatile (journald@deechat.conf) keeps them in RAM.
+#
+# The node logs no routing ids today — boot, shutdown, mesh warnings only.
+# Adding a request log is a change to the privacy posture, not an ops
+# convenience.
+LogNamespace=deechat
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

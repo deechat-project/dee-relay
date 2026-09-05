@@ -1,0 +1,128 @@
+# DeeChat relay — Caddy reverse proxy.
+#
+#   cp Caddyfile.example /etc/caddy/Caddyfile   # then edit the hostname
+#   caddy validate --config /etc/caddy/Caddyfile
+#   systemctl reload caddy
+#
+# Caddy is the recommended front end for one reason beyond certificates: it
+# streams request and response bodies by default. nginx buffers request bodies
+# to a temp file on disk once they exceed client_body_buffer_size, which would
+# write queued ciphertext to disk on a relay whose whole claim is that it holds
+# none. nginx.conf.example turns that off explicitly; here there is nothing to
+# turn off.
+#
+# Three things this file is responsible for, in order of how badly they fail:
+#
+#   1. /mesh/* returns 404 from the internet (Layer 1 of the mesh-auth fix).
+#   2. No request logging — not of URLs, not of the queue capability header,
+#      not of client addresses.
+#   3. Body limits, so a POST cannot allocate more than the caps allow.
+#
+# Verify with deploy/probe-public.sh once this is live.
+
+relay-1.example.org {
+	# --- Logging ------------------------------------------------------------
+	# The node writes nothing to disk and internal/audit fails the build if that
+	# changes. A proxy access log would reintroduce, on disk, exactly the
+	# routing-id-and-timing metadata the binary refuses to keep: every line
+	# carries a queue id in the URL and a client IP. Off, not sampled, not
+	# rotated. Treat "turn it on to debug something" as a change to the privacy
+	# posture rather than an ops convenience.
+	log {
+		output discard
+	}
+
+	# --- Layer 1: the mesh routes are not internet-reachable -----------------
+	# Pool-internal replication. 404, so the path is indistinguishable from a
+	# build without it — and 404 rather than 403 deliberately, because a 403
+	# confirms the route exists.
+	#
+	# This rule is belt-and-braces: the node does not mount /mesh/* on its public
+	# listener in ANY configuration, so there is nothing behind this
+	# to forward to. Replication has its own listener on a private address
+	# (DEE_NODE_MESH_ADDR), which this proxy never sees. Keep the rule anyway —
+	# it costs nothing, and it is the layer that survives a future refactor that
+	# puts a mesh route back on the public mux. internal/audit fails the build if
+	# either half disappears.
+	handle /mesh/* {
+		respond 404
+	}
+
+	# --- Attachment relay ---------------------------------------------------
+	# Chunks are the largest legitimate body: DEE_NODE_MAX_CHUNK_BYTES plus the
+	# JSON around it. Keep this in step with node.env, and never below 1 MiB —
+	# the client sends 512 KiB plaintext chunks that base64 to roughly 700 KiB,
+	# so a tighter limit rejects every transfer.
+	#
+	# GET /attachments/chunks long-polls for up to DEE_NODE_RELAY_POLL_TIMEOUT
+	# (25s default). The read timeout has to clear that or the proxy cuts the
+	# poll and the recipient sees a transfer that never progresses.
+	handle /attachments/* {
+		request_body {
+			max_size 1536KB
+		}
+		reverse_proxy 127.0.0.1:8080 {
+			transport http {
+				read_timeout 90s
+				write_timeout 90s
+			}
+			header_up -X-Forwarded-For
+		}
+	}
+
+	# --- Everything else ----------------------------------------------------
+	# Messages, acks, presence, prekeys, health. DEE_NODE_MAX_PAYLOAD_BYTES is
+	# 8 KiB; the ceiling here covers batched requests (POST /prekeys publishes
+	# up to 100 entries) with room to spare. The binary applies a tighter bound
+	# of its own, derived from the caps it enforces — see
+	# internal/httpapi/body_limit.go — so this is the outer and coarser of two
+	# layers, not the only one.
+	handle {
+		request_body {
+			max_size 512KB
+		}
+		reverse_proxy 127.0.0.1:8080 {
+			transport http {
+				read_timeout 30s
+				write_timeout 30s
+			}
+			# The node never logs client addresses and has no use for them.
+			# Not forwarding the header keeps it that way even if the node
+			# later grows something that reads it.
+			header_up -X-Forwarded-For
+		}
+	}
+
+	# --- TLS ----------------------------------------------------------------
+	# Certificates are automatic. The client refuses plain http:// for non-local
+	# hosts, so a relay that loses its certificate fails closed at the client
+	# rather than downgrading.
+	#
+	# Publish the SPKI hash of this certificate alongside the relay's URL — that
+	# is the endpoint fingerprint, and it is what lets a Circle steward's
+	# members check they are talking to the relay they were given:
+	#
+	#   deploy/spki-hash.sh relay-1.example.org
+	#
+	# Read the caveat in deploy/FINGERPRINTS.md before publishing it as a fixed
+	# value. Caddy generates a NEW certificate key on every renewal by default, so
+	# this fingerprint changes about every 60 days on its own, and a published
+	# constant would start alarming on routine renewal. The record is therefore
+	# published with the certificate's expiry attached and refreshed on renewal.
+	#
+	# Uncommenting the block below makes the value stable instead, by reusing the
+	# key across renewals. Caddy documents that option as TEMPORARY and likely to
+	# be removed, and it keeps one key alive for years — a deliberate trade for a
+	# relay whose fingerprint is handed out on paper, not a default.
+	#
+	#   tls {
+	#       reuse_private_keys
+	#   }
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	# Nothing on this relay is a browser page. These cost nothing and close off
+	# the accidental-embed class of surprise.
+	header X-Content-Type-Options "nosniff"
+	header Referrer-Policy "no-referrer"
+	header -Server
+}

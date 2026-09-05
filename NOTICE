@@ -1,0 +1,12 @@
+DeeChat Relay
+Copyright 2026 The DeeChat Project
+
+This product includes software developed as part of the DeeChat project.
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file for the
+full terms.
+
+The node is deliberately built on the Go standard library alone: it declares no
+third-party module requirements, so this NOTICE carries no third-party
+attributions. Verify with `go list -m all` and the no-durable-state audit in
+`internal/audit/no_durable_state_test.go`.

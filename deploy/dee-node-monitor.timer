@@ -1,0 +1,15 @@
+[Unit]
+Description=Poll the DeeChat relay's health every minute
+
+[Timer]
+# A minute is chosen for the crash-loop signal: uptimeSec going backwards is
+# only visible if the poll interval is shorter than the loop. Restart=always
+# with RestartSec=2s means a crashing relay cycles fast, and a five-minute poll
+# would see nothing but a small uptime and call it a recent reboot.
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+Unit=dee-node-monitor.service
+
+[Install]
+WantedBy=timers.target
