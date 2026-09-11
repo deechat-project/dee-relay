@@ -166,6 +166,7 @@ func main() {
 	httpServer := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           server.Handler(),
+		ErrorLog:          serverErrorLog(logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		// Body reads are bounded per request inside the handler chain (see
 		// httpapi.limitBodies) rather than by Server.ReadTimeout, which would
@@ -185,6 +186,7 @@ func main() {
 		meshServer = &http.Server{
 			Addr:              cfg.MeshAddr,
 			Handler:           handler,
+			ErrorLog:          serverErrorLog(logger),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       cfg.IdleTimeout,
 		}
